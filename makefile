@@ -10,8 +10,8 @@ CUDA_ROOT_DIR=/usr/local/cuda
 ## CC COMPILER OPTIONS ##
 
 # CC compiler options:
-CC=clang++
-CC_FLAGS=
+CC=g++
+CC_FLAGS=-g -std=c++17
 CC_LIBS=
 
 ##########################################################
@@ -51,7 +51,7 @@ INC_DIR = include
 EXE = parellel_sudoku_solver
 
 # Object files:
-OBJS = $(OBJ_DIR)/main.o $(OBJ_DIR)/cuda_kernel.o
+OBJS = $(OBJ_DIR)/main.o $(OBJ_DIR)/cuda_kernel.o $(OBJ_DIR)/sudoku_provider.o
 
 ##########################################################
 
@@ -66,7 +66,7 @@ $(OBJ_DIR)/%.o : %.cpp
 	$(CC) $(CC_FLAGS) -c $< -o $@
 
 # Compile C++ source files to object files:
-$(OBJ_DIR)/%.o : $(SRC_DIR)/%.cpp include/%.h
+$(OBJ_DIR)/%.o : $(SRC_DIR)/%.cpp include/%.hpp
 	$(CC) $(CC_FLAGS) -c $< -o $@
 
 # Compile CUDA source files to object files:
