@@ -3,9 +3,10 @@
 #include <cassert>
 #include <cstdio>
 #include <ctime>
+#include <utility>
 
-#include <cuda_runtime_api.h>
 #include <cuda.h>
+#include <cuda_runtime_api.h>
 #include <curand.h>
 #include <curand_kernel.h>
 
@@ -15,225 +16,185 @@ namespace {
 constexpr unsigned kBlocks = 999;
 constexpr unsigned kNumBanks = 16;
 constexpr unsigned kLogNumBanks = 4;
-__device__ constexpr unsigned ConflictFreeIndex(unsigned index) {
-	return index + (index >> kLogNumBanks);
+
+__device__ int Tid() {
+  return blockIdx.x * blockDim.x * blockDim.y + threadIdx.y * blockDim.x +
+         threadIdx.x;
 }
 
-__device__ constexpr unsigned ExpandedSpace(unsigned size) {
-	return size += size / kNumBanks;
+__device__ constexpr int ConflictFreeIndex(int index) {
+  return index;
 }
 
-template<class T>
-__device__ constexpr T& At(T* arr, int x, int y) {
-	return arr[ConflictFreeIndex(y * Board::kBoardSize + x)];
+__device__ constexpr int AdjustSize(int size) {
+  return size;
 }
 
-template<Board::Size size>
-struct RowPattern {
-	constexpr RowPattern() :
-			pattern() {
-		for (auto i = 0u; i < size; ++i)
-			pattern[i] = {static_cast<int>(i), 0};
-		}
-		int2 pattern[size];
-		Board::Size length = size;
-	};
+struct PossibleValues {
+  Board::FieldValue values[Board::kBoardSize] = {0};
+  int len = 0;
+  __device__ PossibleValues &operator=(PossibleValues const &other) {
+    if (this != &other) {
+      for (int i = 0; i < other.len; ++i)
+        values[i] = other.values[i];
+      len = other.len;
+    }
+    return *this;
+  }
+};
 
-template<Board::Size size>
-struct ColPattern {
-	constexpr ColPattern() :
-			pattern() {
-		for (auto i = 0u; i < size; ++i)
-			pattern[i] = {0, static_cast<int>(i)};
-		}
-		int2 pattern[size];
-		Board::Size length = size;
-	};
-
-template<Board::Size size>
-struct QuadrantPattern {
-	constexpr QuadrantPattern() :
-			pattern() {
-		for (auto i = 0u; i < size; ++i)
-			for (auto j = 0u; j < size; ++j)
-				pattern[i + j * size] = {static_cast<int>(i), static_cast<int>(j)};
-			}
-			int2 pattern[size * size];
-			Board::Size length = size * size;
-		};
-
-__device__ auto Tid() {
-	return blockIdx.x * blockDim.x * blockDim.y + threadIdx.y * blockDim.x
-			+ threadIdx.x;
+__device__ PossibleValues GetPossibleValues(Board::FieldValue board[AdjustSize(
+    Board::kBoardSize)][AdjustSize(Board::kBoardSize)]) {
+  bool free[Board::kBoardSize];
+  memset(free, 1, sizeof free);
+  for (auto i = 0u; i < Board::kBoardSize; ++i) {
+    auto val = board[ConflictFreeIndex(i)][ConflictFreeIndex(threadIdx.y)];
+    if (val > 0)
+      free[val - 1] = false;
+    val = board[ConflictFreeIndex(threadIdx.x)][ConflictFreeIndex(i)];
+    if (val > 0)
+      free[val - 1] = false;
+  }
+  auto pom_x = threadIdx.x - threadIdx.x % Board::kQuadrantSize;
+  auto pom_y = threadIdx.y - threadIdx.y % Board::kQuadrantSize;
+  for (int i = 0; i < Board::kQuadrantSize; ++i)
+    for (int j = 0; j < Board::kQuadrantSize; ++j) {
+      auto val = board
+          [ConflictFreeIndex(pom_x + (threadIdx.x + i) % Board::kQuadrantSize)]
+          [ConflictFreeIndex(pom_y + (threadIdx.y + j) % Board::kQuadrantSize)];
+      if (val > 0)
+        free[val - 1] = false;
+    }
+  PossibleValues ret;
+  for (int i = 0; i < Board::kBoardSize; ++i)
+    if (free[i])
+      ret.values[ret.len++] = i + 1;
+  return ret;
 }
 
-__global__ void Kernel(Board::FieldValue* board, Board::FieldValue* solved,
-		curandState_t* states, unsigned* done) {
-	__shared__ Board::FieldValue s_board[ExpandedSpace(
-			Board::kBoardSize * Board::kBoardSize)];
-	__shared__ bool s_correct[ExpandedSpace(Board::kBoardSize)];
+__device__ int2 RowPattern(int i) { return {i, threadIdx.x}; }
 
-	const auto tid = Tid();
-	const auto index = ConflictFreeIndex(
-			threadIdx.x + Board::kBoardSize * threadIdx.y);
-	s_board[index] = board[threadIdx.y * Board::kBoardSize + threadIdx.x];
-	constexpr RowPattern<Board::kBoardSize> row_pattern;
-	constexpr ColPattern<Board::kBoardSize> col_pattern;
-	constexpr QuadrantPattern<Board::kQuadrantSize> q_pattern;
-	bool active = s_board[index] == 0;
-	Board::FieldValue* possible_values =
-			new Board::FieldValue[Board::kBoardSize];
-	unsigned int pvs = 0;
-	if (active) {
-		bool used[Board::kBoardSize];
-		for (auto i = 0u; i < Board::kBoardSize; ++i)
-			used[i] = true;
-		for (auto i = 0u; i < Board::kBoardSize; ++i) {
-			auto j = At(s_board, i, threadIdx.y);
-			if (j > 0)
-				used[j - 1] = false;
-			j = At(s_board, threadIdx.x, i);
-			if (j > 0)
-				used[j - 1] = false;
-		}
-		auto pom_x = threadIdx.x - threadIdx.x % Board::kQuadrantSize;
-		auto pom_y = threadIdx.y - threadIdx.y % Board::kQuadrantSize;
-		for (auto x = 0u; x < Board::kQuadrantSize; ++x)
-			for (auto y = 0u; y < Board::kQuadrantSize; ++y) {
-				auto j = At(s_board, pom_x + x, pom_y + y);
-				if (j > 0)
-					used[j - 1] = false;
-			}
-		for (auto i = 0u; i < Board::kBoardSize; ++i)
-			if (used[i])
-				possible_values[pvs++] = i + 1;
-		assert(pvs > 0);
-		if (pvs == 1) {
-			s_board[index] = possible_values[0];
-			active = false;
-		}
-	}
-	char used_values[Board::kBoardSize];
-	bool b = false;
-	while (true) {
-		__syncthreads();
-		if (*done > 0) {
-			solved[tid] = s_board[index];
-			if (threadIdx.x + threadIdx.y == 0 && !b)
-				solved[tid] = 0;
-			delete[] possible_values;
-			return;
-		}
-		if (active)
-			s_board[index] = possible_values[curand(&states[tid]) % pvs];
-        __syncthreads();
-		if (threadIdx.y == 0) {
-			s_correct[index] = true;
-			memset(used_values, 0, Board::kBoardSize * sizeof(char));
-			for (auto i = 0u; i < Board::kBoardSize; ++i)
-				used_values[At(s_board, row_pattern.pattern[i].x, threadIdx.x)
-						- 1] = true;
-			for (auto i = 0u; i < Board::kBoardSize; ++i)
-				if (!used_values[i]) {
-					s_correct[index] = false;
-					break;
-				}
-			if (s_correct[index]) {
-				memset(used_values, 0, Board::kBoardSize * sizeof(char));
-				for (auto i = 0u; i < Board::kBoardSize; ++i)
-					used_values[At(s_board, threadIdx.x,
-							col_pattern.pattern[i].y) - 1] = true;
-				for (auto i = 0u; i < Board::kBoardSize; ++i)
-					if (!used_values[i]) {
-						s_correct[index] = false;
-						break;
-					}
-			}
-			if (s_correct[index]) {
-				memset(used_values, 0, Board::kBoardSize * sizeof(char));
-				for (auto i = 0u; i < Board::kBoardSize; ++i)
-					used_values[At(s_board,
-							(threadIdx.x % Board::kQuadrantSize)
-									* Board::kQuadrantSize
-									+ q_pattern.pattern[i].x,
-							(threadIdx.x / Board::kQuadrantSize)
-									* Board::kQuadrantSize
-									+ q_pattern.pattern[i].y) - 1] = true;
-				for (auto i = 0u; i < Board::kBoardSize; ++i)
-					if (!used_values[i]) {
-						s_correct[index] = false;
-						break;
-					}
-			}
-		}
-		__syncthreads();
-		if (threadIdx.x + threadIdx.y == 0) {
-			for (auto i = 0u; i < Board::kBoardSize; ++i)
-				if (!(b = s_correct[ConflictFreeIndex(i)]))
-					break;
-			if (b)
-				atomicAdd(done, 1);
-		}
-	}
-}
-__global__ void InitCurand(unsigned seed, curandState_t* states) {
-	curand_init(seed, Tid(), 0, &states[Tid()]);
-}
-}
-std::vector<Board::FieldValue> Run(
-		std::vector<Board::FieldValue> const& board) {
-	curandState_t* d_states;
-	cudaMalloc(reinterpret_cast<void**>(&d_states),
-			kBlocks * Board::kBoardSize * Board::kBoardSize
-					* sizeof(curandState_t));
-	dim3 block(Board::kBoardSize, Board::kBoardSize);
-	InitCurand<<<kBlocks, block>>>(std::time(nullptr), d_states);
+__device__ int2 ColPattern(int i) { return {threadIdx.x, i}; }
 
-	Board::FieldValue* d_solved;
-	cudaMalloc(reinterpret_cast<void**>(&d_solved),
-			kBlocks * Board::kBoardSize * Board::kBoardSize
-					* sizeof(Board::FieldValue));
-	cudaMemset(d_solved, 0,
-			kBlocks * Board::kBoardSize * Board::kBoardSize
-					* sizeof(Board::FieldValue));
+__device__ int2 QuaPattern(int i) {}
 
-	Board::FieldValue* d_board = nullptr;
-	cudaMalloc(reinterpret_cast<void**>(&d_board),
-			Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue));
-	cudaMemcpy(d_board, board.data(),
-			Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue),
-			cudaMemcpyHostToDevice);
-	unsigned *d_done = nullptr;
-	cudaMalloc(reinterpret_cast<void**>(&d_done), sizeof(unsigned));
-	cudaMemset(d_done, 0, sizeof(unsigned));
-	cudaDeviceSynchronize();
+__device__ bool
+Validate(Board::FieldValue board[AdjustSize(Board::kBoardSize)]
+                                [AdjustSize(Board::kBoardSize)]) {
+  auto pattern =
+      threadIdx.y == 0 ? RowPattern : (threadIdx.y == 1 ? ColPattern : nullptr);
+  if (!pattern)
+    return true;
+  bool used[Board::kBoardSize] = {0};
+  for (int i = 0; i < Board::kBoardSize; ++i) {
+    auto pos = pattern(i);
+    used[board[ConflictFreeIndex(pos.x)][ConflictFreeIndex(pos.y)] - 1] = true;
+  }
+  for (int i = 0; i < Board::kBoardSize; ++i)
+    if (!used[i])
+      return false;
+  return true;
+}
 
-	auto start = clock();
-	Kernel<<<kBlocks, block>>>(d_board, d_solved, d_states, d_done);
-	cudaDeviceSynchronize();
-	auto end = clock();
-	printf("%ld ms\n", end - start);
+__global__ void Kernel(Board::FieldValue *board, Board::FieldValue *solved,
+                       curandState_t *states, int *done) {
+  __shared__ Board::FieldValue s_board[AdjustSize(Board::kBoardSize)]
+                                      [AdjustSize(Board::kBoardSize)];
+  __shared__ bool s_done;
 
-	std::vector<Board::FieldValue> solved(
-			kBlocks * Board::kBoardSize * Board::kBoardSize, Board::FieldValue {
-					0 });
-	cudaMemcpy(solved.data(), d_solved,
-			kBlocks * Board::kBoardSize * Board::kBoardSize,
-			cudaMemcpyDeviceToHost);
-	std::vector<Board::FieldValue> ret;
-	for (auto it = solved.begin(); it != solved.end();) {
-		if (*it == 0) {
-			it += Board::kBoardSize * Board::kBoardSize;
-		} else {
-			ret = std::vector<Board::FieldValue> { it, it
-					+ Board::kBoardSize * Board::kBoardSize };
-			break;
-		}
-	}
-	cudaFree(d_states);
-	cudaFree(d_board);
-	cudaFree(d_solved);
-	return ret;
+  s_done = true;
+  const auto tid = Tid();
+  const auto x = ConflictFreeIndex(threadIdx.x);
+  const auto y = ConflictFreeIndex(threadIdx.y);
+  bool active = 0 == (s_board[x][y] = board[threadIdx.x + threadIdx.y * Board::kBoardSize]);
+  PossibleValues pv;
+  do {
+    pv = GetPossibleValues(s_board);
+    __syncthreads();
+    s_done = true;
+    if (active && pv.len == 1) {
+      s_board[x][y] = pv.values[0];
+      active = false;
+      s_done = false;
+    }
+    __syncthreads();
+  } while (!s_done);
+  __syncthreads();
+  s_done = false;
+  while (true) {
+    __syncthreads();
+    if (*done) {
+      solved[tid] = s_done ? s_board[x][y] : 0;
+      return;
+    }
+    if (active)
+      s_board[x][y] = pv.values[curand(&states[tid]) % pv.len];
+    s_done = true;
+    __syncthreads();
+    if (!Validate(s_board))
+      s_done = false;
+    __syncthreads();
+    if (threadIdx.x + threadIdx.y == 0 && s_done)
+      atomicAdd(done, 1);
+  }
 }
+__global__ void InitCurand(unsigned seed, curandState_t *states) {
+  curand_init(seed, Tid(), 0, &states[Tid()]);
 }
+} // namespace
+std::vector<Board::FieldValue>
+Run(std::vector<Board::FieldValue> const &board) {
+  curandState_t *d_states;
+  cudaMalloc(reinterpret_cast<void **>(&d_states), kBlocks * Board::kBoardSize *
+                                                       Board::kBoardSize *
+                                                       sizeof(curandState_t));
+  dim3 block(Board::kBoardSize, Board::kBoardSize);
+  InitCurand<<<kBlocks, block>>>(std::time(nullptr), d_states);
+
+  Board::FieldValue *d_solved;
+  cudaMalloc(reinterpret_cast<void **>(&d_solved),
+             kBlocks * Board::kBoardSize * Board::kBoardSize *
+                 sizeof(Board::FieldValue));
+  cudaMemset(d_solved, 0,
+             kBlocks * Board::kBoardSize * Board::kBoardSize *
+                 sizeof(Board::FieldValue));
+
+  Board::FieldValue *d_board = nullptr;
+  cudaMalloc(reinterpret_cast<void **>(&d_board),
+             Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue));
+  cudaMemcpy(d_board, board.data(),
+             Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue),
+             cudaMemcpyHostToDevice);
+  int *d_done = nullptr;
+  cudaMalloc(reinterpret_cast<void **>(&d_done), sizeof(unsigned));
+  cudaMemset(d_done, 0, sizeof(unsigned));
+  cudaDeviceSynchronize();
+
+  auto start = clock();
+  Kernel<<<kBlocks, block>>>(d_board, d_solved, d_states, d_done);
+  cudaDeviceSynchronize();
+  auto end = clock();
+  printf("%ld ms\n", end - start);
+
+  std::vector<Board::FieldValue> solved(
+      kBlocks * Board::kBoardSize * Board::kBoardSize, Board::FieldValue{0});
+  cudaMemcpy(solved.data(), d_solved,
+             kBlocks * Board::kBoardSize * Board::kBoardSize,
+             cudaMemcpyDeviceToHost);
+  std::vector<Board::FieldValue> ret;
+  for (auto it = solved.begin(); it != solved.end();) {
+    if (*it == 0) {
+      it += Board::kBoardSize * Board::kBoardSize;
+    } else {
+      ret = std::vector<Board::FieldValue>{it, it + Board::kBoardSize *
+                                                        Board::kBoardSize};
+      break;
+    }
+  }
+  cudaFree(d_states);
+  cudaFree(d_board);
+  cudaFree(d_solved);
+  return ret;
 }
+} // namespace kernel
+} // namespace sudoku
