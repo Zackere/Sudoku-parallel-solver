@@ -10,7 +10,7 @@ CUDA_ROOT_DIR=/usr/local/cuda
 ## CC COMPILER OPTIONS ##
 
 # CC compiler options:
-CC=g++
+CC=clang++
 CC_FLAGS=-g -std=c++17
 CC_LIBS=
 
@@ -20,7 +20,7 @@ CC_LIBS=
 
 # NVCC compiler options:
 NVCC=nvcc
-NVCC_FLAGS=
+NVCC_FLAGS= -g --expt-relaxed-constexpr
 NVCC_LIBS=
 
 # CUDA library directory:
@@ -51,7 +51,9 @@ INC_DIR = include
 EXE = parellel_sudoku_solver
 
 # Object files:
-OBJS = $(OBJ_DIR)/main.o $(OBJ_DIR)/cuda_kernel.o $(OBJ_DIR)/sudoku_provider.o
+OBJS = $(OBJ_DIR)/main.o 
+OBJS += $(OBJ_DIR)/cuda_kernel.o 
+OBJS += $(OBJ_DIR)/board.o
 
 ##########################################################
 
