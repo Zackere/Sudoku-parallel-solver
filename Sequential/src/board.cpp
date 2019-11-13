@@ -44,22 +44,17 @@ std::vector<Board::FieldValue> const &Board::Get() const { return data_; }
 bool Board::Correct() const { return correct_; }
 
 bool Board::Validate(std::vector<FieldValue> const &data) {
-  if (data.size() != kBoardSize * kBoardSize) {
-    std::cerr << "Wrong size\n";
+  if (data.size() != kBoardSize * kBoardSize)
     return false;
-  }
   std::set<FieldValue> used_values;
   for (auto row = 0u; row < kBoardSize; ++row) {
     used_values.clear();
     for (auto i = 0u; i < kBoardSize; ++i) {
       auto val = At(data, row, i);
       if (val > 0 && val <= kBoardSize) {
-        if (!used_values.insert(val).second) {
-          std::cerr << (int)val << "Occured twice\n";
+        if (!used_values.insert(val).second)
           return false;
-        }
       } else if (val > kBoardSize) {
-        std::cerr << val << "Is too big\n";
         return false;
       }
     }

@@ -11,7 +11,7 @@ CUDA_ROOT_DIR=/usr/local/cuda
 
 # CC compiler options:
 CC=nvcc
-CC_FLAGS=-g -std=c++11 --expt-relaxed-constexpr -O3
+CC_FLAGS=-std=c++11 -O3
 CC_LIBS=
 
 ##########################################################
@@ -55,13 +55,15 @@ OBJS = $(OBJ_DIR)/main.o
 OBJS += $(OBJ_DIR)/cuda_kernel.o 
 OBJS += $(OBJ_DIR)/board.o
 
+FORMAT = clang-format -i ./src/* ./include/* main.cpp
+
 ##########################################################
 
 ## Compile ##
 
 # Link c++ and CUDA compiled object files to target executable:
 $(EXE) : $(OBJS)
-	$(CC) $(CC_FLAGS) $(OBJS) -o $@ $(CUDA_INC_DIR) $(CUDA_LIB_DIR) $(CUDA_LINK_LIBS)
+	$(FORMAT); $(CC) $(CC_FLAGS) $(OBJS) -o $@ $(CUDA_INC_DIR) $(CUDA_LIB_DIR) $(CUDA_LINK_LIBS)
 
 # Compile main .cpp file to object files:
 $(OBJ_DIR)/%.o : %.cpp

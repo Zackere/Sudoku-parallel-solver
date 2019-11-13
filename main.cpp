@@ -1,17 +1,22 @@
 #include <iostream>
+#include <list>
 
 #include "include/cuda_kernel.cuh"
 
 #include "include/board.hpp"
 
 int main(int argc, char const **argv) {
-  sudoku::Board board;
+  std::list<sudoku::Board> boards;
   for (auto i = 1u; i < argc; ++i) {
-    board.Read(argv[i]);
+    boards.emplace_back();
+    boards.back().Read(argv[i]);
+  }
+  for (auto &board : boards) {
     if (board.Correct()) {
       std::cout << board << std::endl;
       auto data = sudoku::kernel::Run(board.Get());
-      if (sudoku::Board::Validate(data)) {
+      bool b = sudoku::Board::Validate(data);
+      if (true) {
         for (auto i = 0u;
              i < sudoku::Board::kBoardSize * sudoku::Board::kBoardSize; ++i) {
           if (i > 0 && i % sudoku::Board::kBoardSize == 0)
@@ -25,8 +30,9 @@ int main(int argc, char const **argv) {
           std::cout << static_cast<int>(data[i]);
         }
         std::cout << "|\n";
-      } else
-        std::cout << "Sth went wrong\n";
+        if (!b)
+          std::cout << "Sth went wrong@@@@@@@@@@@@@@@@@@@@@@@@\n";
+      }
     }
   }
   return 0;

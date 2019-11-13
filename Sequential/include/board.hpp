@@ -7,7 +7,7 @@
 namespace sudoku {
 class Board {
 public:
-  using FieldValue = int8_t;
+  using FieldValue = uint8_t;
   using Size = unsigned;
   static bool Validate(std::vector<FieldValue> const &data);
   static constexpr Size kQuadrantSize = 3;

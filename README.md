@@ -1,1 +1,1 @@
-# Sudoku-parallel-solver
+#Sudoku - parallel - solver
