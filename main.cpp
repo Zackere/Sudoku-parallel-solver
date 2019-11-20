@@ -24,10 +24,10 @@ int main(int argc, char const **argv) {
           if (i > 0 &&
               i % (sudoku::Board::kBoardSize * sudoku::Board::kQuadrantSize) ==
                   0)
-            std::cout << "=============\n";
+            std::cout << "==========================\n";
           if (i % sudoku::Board::kQuadrantSize == 0)
-            std::cout << '|';
-          std::cout << static_cast<int>(data[i]);
+            std::cout << "| ";
+          std::cout << static_cast<int>(data[i]) << ' ';
         }
         std::cout << "|\n";
         if (!b)
