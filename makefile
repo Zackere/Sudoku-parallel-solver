@@ -11,7 +11,7 @@ CUDA_ROOT_DIR=/usr/local/cuda
 
 # CC compiler options:
 CC=nvcc
-CC_FLAGS=-std=c++11 -O3
+CC_FLAGS=-std=c++11 -O3 -maxrregcount 32 -lineinfo
 CC_LIBS=
 
 ##########################################################
