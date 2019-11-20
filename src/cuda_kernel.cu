@@ -15,7 +15,7 @@ namespace kernel {
 namespace {
 constexpr unsigned kBlocks = 1024;
 constexpr unsigned kThreadsPerBlock = 256;
-constexpr unsigned kNBoards = 1 << 23;
+constexpr unsigned kNBoards = 1 << 22;
 constexpr unsigned kIterations = 9;
 
 #define SetNthBit(number, n) ((number) |= (1ul << (n)))
@@ -47,17 +47,16 @@ __device__ uint16_t GetPossibleValues(Board::FieldValue *board, int cell) {
 }
 
 __global__ void Generator(Board::FieldValue *old_boards, int *old_boards_count,
-                          int *starting_point_old,
                           Board::FieldValue *new_boards, int *new_boards_count,
-                          int *starting_point_new,
+                          unsigned char *empty_fields,
+                          unsigned char *empty_fields_count,
                           Board::FieldValue *solved_board,
                           int *solved_board_mutex) {
   for (int index = blockIdx.x * blockDim.x + threadIdx.x;
        index < *old_boards_count; index += blockDim.x * gridDim.x) {
     if (*solved_board_mutex)
       return;
-    for (int i = index * Board::kBoardSize * Board::kBoardSize +
-                 starting_point_old[index];
+    for (int i = index * Board::kBoardSize * Board::kBoardSize;
          i < (index + 1) * Board::kBoardSize * Board::kBoardSize; ++i) {
       if (!old_boards[i]) {
         auto pv = GetPossibleValues(
@@ -68,12 +67,16 @@ __global__ void Generator(Board::FieldValue *old_boards, int *old_boards_count,
             auto pos = atomicAdd(new_boards_count, 1);
             if (pos < kNBoards) {
               old_boards[i] = j + 1;
-              starting_point_new[pos] =
-                  i - index * Board::kBoardSize * Board::kBoardSize + 1;
-              for (int k = 0; k < Board::kBoardSize * Board::kBoardSize; ++k)
-                new_boards[pos * Board::kBoardSize * Board::kBoardSize + k] =
-                    old_boards[index * Board::kBoardSize * Board::kBoardSize +
-                               k];
+              unsigned char empty_index = static_cast<unsigned char>(-1);
+              for (int k = 0; k < Board::kBoardSize * Board::kBoardSize; ++k) {
+                if (!(new_boards[pos * Board::kBoardSize * Board::kBoardSize +
+                                 k] = old_boards
+                          [index * Board::kBoardSize * Board::kBoardSize + k]))
+                  empty_fields[++empty_index +
+                               pos * Board::kBoardSize * Board::kBoardSize] =
+                      pos * Board::kBoardSize * Board::kBoardSize + k;
+              }
+              empty_fields_count[pos] = empty_index + 1;
             }
           }
         }
@@ -90,38 +93,74 @@ __global__ void Generator(Board::FieldValue *old_boards, int *old_boards_count,
   }
 }
 
-__device__ bool Solve(Board::FieldValue *board, int start) {
-  int stack[2 * Board::kBoardSize * Board::kBoardSize] = {0};
-  int stack_top = -1;
-  int i = start, j = 0;
-PROC_START:
-  for (; i < Board::kBoardSize * Board::kBoardSize; ++i)
-    if (!board[i]) {
-      auto pv = GetPossibleValues(board, i);
-      for (j = 0; j < Board::kBoardSize; ++j)
-        if (GetNthBit(pv, j)) {
-          board[i] = j + 1;
-          stack[++stack_top] = i++;
-          stack[++stack_top] = j;
-          stack[++stack_top] = pv;
-          // call Solve(board, i)
-          goto PROC_START;
-          // return from unsuccessful Solve(board, i)
-        RET_LABEL:
-          pv = stack[stack_top--];
-          j = stack[stack_top--];
-          i = stack[stack_top--];
-        }
-      board[i] = 0;
-      if (stack_top == -1)
+__device__ bool NotInRow(Board::FieldValue *board, int row) {
+  uint16_t st = 0;
+
+  for (int i = 0; i < Board::kBoardSize; i++)
+    if (board[Board::kBoardSize * row + i]) {
+      if (GetNthBit(st, board[Board::kBoardSize * row + i]))
         return false;
-      goto RET_LABEL;
+      SetNthBit(st, board[Board::kBoardSize * row + i]);
     }
   return true;
 }
 
+__device__ bool NotInCol(Board::FieldValue *board, int col) {
+  uint16_t st = 0;
+  for (int i = 0; i < Board::kBoardSize; i++)
+    if (board[Board::kBoardSize * i + col]) {
+      if (GetNthBit(st, board[Board::kBoardSize * i + col]))
+        return false;
+      SetNthBit(st, board[Board::kBoardSize * i + col]);
+    }
+  return true;
+}
+
+__device__ bool NotInBox(Board::FieldValue *board, int startRow, int startCol) {
+  uint16_t st = 0;
+  for (int row = 0; row < Board::kQuadrantSize; ++row)
+    for (int col = 0; col < Board::kQuadrantSize; ++col)
+      if (board[Board::kBoardSize * row + col]) {
+        if (GetNthBit(st, board[Board::kBoardSize * row + col]))
+          return false;
+        SetNthBit(st, board[Board::kBoardSize * row + col]);
+      }
+  return true;
+}
+
+__device__ bool IsValid(Board::FieldValue *board, int row, int col) {
+  return NotInRow(board, row) && NotInCol(board, col) &&
+         NotInBox(board, row - row % 3, col - col % 3);
+}
+
+__device__ bool IsValidConfig(Board::FieldValue *board) {
+  for (int i = 0; i < Board::kBoardSize; ++i)
+    for (int j = 0; j < Board::kBoardSize; ++j)
+      if (!IsValid(board, i, j))
+        return false;
+  return true;
+}
+
+__device__ bool Solve(Board::FieldValue *board, unsigned char *empty_fields,
+                      unsigned char empty_fields_count) {
+  unsigned char empty_index = 0;
+  while (empty_index < empty_fields_count) {
+    ++board[empty_fields[empty_index]];
+    if (!IsValidConfig(board)) {
+      if (board[empty_fields[empty_index]] >= 9) {
+        board[empty_fields[empty_index]] = 0;
+        --empty_index;
+      }
+    } else {
+      ++empty_index;
+    }
+  }
+  return empty_fields_count == empty_index;
+}
+
 __global__ void Backtracker(Board::FieldValue *old_boards,
-                            int *old_boards_count, int *starting_points,
+                            int *old_boards_count, unsigned char *empty_fields,
+                            unsigned char *empty_fields_count,
                             Board::FieldValue *solved_board,
                             int *solved_board_mutex) {
   for (int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -129,7 +168,8 @@ __global__ void Backtracker(Board::FieldValue *old_boards,
     if (*solved_board_mutex)
       return;
     if (Solve(old_boards + index * Board::kBoardSize * Board::kBoardSize,
-              starting_points[index])) {
+              empty_fields + index * Board::kBoardSize * Board::kBoardSize,
+              empty_fields_count[index])) {
       atomicCAS(solved_board_mutex, 0, blockIdx.x * blockDim.x + threadIdx.x);
       if (*solved_board_mutex != blockIdx.x * blockDim.x + threadIdx.x)
         return;
@@ -169,52 +209,59 @@ Run(std::vector<Board::FieldValue> const &board) {
              Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue),
              cudaMemcpyHostToDevice);
 
-  int *d_starting_point_old = nullptr;
-  cudaMalloc(reinterpret_cast<void **>(&d_starting_point_old),
-             kNBoards * sizeof(int));
-  cudaMemset(d_starting_point_old, 0, kNBoards * sizeof(int));
-  int *d_starting_point_new = nullptr;
-  cudaMalloc(reinterpret_cast<void **>(&d_starting_point_new),
-             kNBoards * sizeof(int));
-  cudaMemset(d_starting_point_new, 0, kNBoards * sizeof(int));
-
   Board::FieldValue *d_solved_board = nullptr;
   cudaMalloc(reinterpret_cast<void **>(&d_solved_board),
              Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue));
   cudaMemset(d_solved_board, 0,
              Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue));
+
   int *d_solved_board_mutex = nullptr;
   cudaMalloc(reinterpret_cast<void **>(&d_solved_board_mutex), sizeof(int));
   cudaMemset(d_solved_board_mutex, 0, sizeof(int));
+
+  unsigned char *d_empty_fields = nullptr;
+  cudaMalloc(reinterpret_cast<void **>(&d_empty_fields),
+             kNBoards * Board::kBoardSize * Board::kBoardSize *
+                 sizeof(unsigned char));
+  cudaMemset(d_empty_fields, 0,
+             kNBoards * Board::kBoardSize * Board::kBoardSize *
+                 sizeof(unsigned char));
+
+  unsigned char *d_empty_fields_count = nullptr;
+  cudaMalloc(reinterpret_cast<void **>(&d_empty_fields_count),
+             kNBoards * sizeof(unsigned char));
+  cudaMemset(d_empty_fields_count, 0, kNBoards * sizeof(unsigned char));
+
   for (int i = 0; i < kIterations; ++i) {
     cudaMemset(d_new_boards_count, 0, sizeof(int));
     Generator<<<kBlocks, kThreadsPerBlock>>>(
-        d_old_boards, d_old_boards_count, d_starting_point_old, d_new_boards,
-        d_new_boards_count, d_starting_point_new, d_solved_board,
+        d_old_boards, d_old_boards_count, d_new_boards, d_new_boards_count,
+        d_empty_fields, d_empty_fields_count, d_solved_board,
         d_solved_board_mutex);
     cudaDeviceSynchronize();
     cudaMemset(d_old_boards_count, 0, sizeof(int));
     Generator<<<kBlocks, kThreadsPerBlock>>>(
-        d_new_boards, d_new_boards_count, d_starting_point_new, d_old_boards,
-        d_old_boards_count, d_starting_point_old, d_solved_board,
+        d_new_boards, d_new_boards_count, d_old_boards, d_old_boards_count,
+        d_empty_fields, d_empty_fields_count, d_solved_board,
         d_solved_board_mutex);
     cudaDeviceSynchronize();
   }
+
   int solved = 0;
   cudaMemcpy(&solved, d_solved_board_mutex, sizeof(int),
              cudaMemcpyDeviceToHost);
   if (!solved)
     Backtracker<<<kBlocks, kThreadsPerBlock>>>(
-        d_old_boards, d_old_boards_count, d_starting_point_old, d_solved_board,
-        d_solved_board_mutex);
+        d_old_boards, d_old_boards_count, d_empty_fields, d_empty_fields_count,
+        d_solved_board, d_solved_board_mutex);
   std::unique_ptr<Board::FieldValue[]> ret(
       new Board::FieldValue[Board::kBoardSize * Board::kBoardSize]);
   cudaMemcpy(ret.get(), d_solved_board,
              Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue),
              cudaMemcpyDeviceToHost);
 
-  cudaFree(d_starting_point_new);
-  cudaFree(d_starting_point_old);
+  cudaFree(d_empty_fields_count);
+  cudaFree(d_empty_fields);
   cudaFree(d_solved_board_mutex);
   cudaFree(d_solved_board);
   cudaFree(d_new_boards_count);
