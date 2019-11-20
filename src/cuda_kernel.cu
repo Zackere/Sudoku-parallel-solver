@@ -1,5 +1,7 @@
 #include "../include/cuda_kernel.cuh"
 
+#include "../include/device_resource_manager.cuh"
+
 #include <cassert>
 #include <cstdio>
 #include <ctime>
@@ -14,7 +16,6 @@ namespace kernel {
 namespace {
 constexpr unsigned kBlocks = 128;
 constexpr unsigned kThreadsPerBlock = 256;
-constexpr unsigned kNBoards = 1 << 22;
 constexpr unsigned kIterations = 10;
 
 #define SetNthBit(number, n) ((number) |= (1ul << (n)))
@@ -93,7 +94,7 @@ __global__ void Generator(Board::FieldValue *old_boards, int *old_boards_count,
                           index * Board::kBoardSize * Board::kBoardSize,
                       row, col)) {
             auto pos = atomicAdd(new_boards_count, 1);
-            if (pos < kNBoards) {
+            if (pos < deviceResourceManager::kNBoards) {
               unsigned char empty_index = static_cast<unsigned char>(-1);
               for (int k = 0; k < Board::kBoardSize * Board::kBoardSize; ++k) {
                 if (!(new_boards[pos * Board::kBoardSize * Board::kBoardSize +
@@ -194,7 +195,6 @@ __global__ void Simplificator(Board::FieldValue *old_boards,
                    index * Board::kBoardSize *
                        Board::kBoardSize)[Board::kBoardSize * threadIdx.y +
                                           threadIdx.x]);
-
     __syncthreads();
     auto pv = GetPossibleValues(s_board);
     auto nelems = __popc(pv);
@@ -213,10 +213,8 @@ __global__ void Simplificator(Board::FieldValue *old_boards,
         nelems = __popc(pv);
       }
     }
-
     if (__syncthreads_or(active && nelems == 0))
       continue;
-
     if (__syncthreads_and(
             IsValid(reinterpret_cast<Board::FieldValue *>(s_board), threadIdx.y,
                     threadIdx.x))) {
@@ -234,55 +232,34 @@ __global__ void Simplificator(Board::FieldValue *old_boards,
 
 std::vector<Board::FieldValue>
 Run(std::vector<Board::FieldValue> const &board) {
-  Board::FieldValue *d_old_boards = nullptr;
-  cudaMalloc(reinterpret_cast<void **>(&d_old_boards),
-             kNBoards * Board::kBoardSize * Board::kBoardSize *
-                 sizeof(Board::FieldValue));
-  int *d_old_boards_count;
-  cudaMalloc(reinterpret_cast<void **>(&d_old_boards_count), sizeof(int));
-  Board::FieldValue *d_new_boards = nullptr;
-  cudaMalloc(reinterpret_cast<void **>(&d_new_boards),
-             kNBoards * Board::kBoardSize * Board::kBoardSize *
-                 sizeof(Board::FieldValue));
-  int *d_new_boards_count = nullptr;
-  cudaMalloc(reinterpret_cast<void **>(&d_new_boards_count), sizeof(int));
-
+  Board::FieldValue *d_old_boards = deviceResourceManager::GetOldBoards();
+  int *d_old_boards_count = deviceResourceManager::GetOldBoardsCount();
+  Board::FieldValue *d_new_boards = deviceResourceManager::GetNewBoards();
+  int *d_new_boards_count = deviceResourceManager::GetNewBoardsCount();
+  Board::FieldValue *d_solved_board = deviceResourceManager::GetSolvedBoard();
+  int *d_solved_board_mutex = deviceResourceManager::GetSolvedBoardMutex();
+  uint8_t *d_empty_fields = deviceResourceManager::GetEmptyFields();
+  uint8_t *d_empty_fields_count = deviceResourceManager::GetEmptyFieldsCount();
   cudaMemset(d_old_boards, 0,
-             kNBoards * Board::kBoardSize * Board::kBoardSize *
-                 sizeof(Board::FieldValue));
+             deviceResourceManager::kNBoards * Board::kBoardSize *
+                 Board::kBoardSize * sizeof(Board::FieldValue));
   cudaMemset(d_new_boards, 0,
-             kNBoards * Board::kBoardSize * Board::kBoardSize *
-                 sizeof(Board::FieldValue));
+             deviceResourceManager::kNBoards * Board::kBoardSize *
+                 Board::kBoardSize * sizeof(Board::FieldValue));
   std::unique_ptr<int> one(new int(1));
   cudaMemcpy(d_old_boards_count, one.get(), sizeof(int),
              cudaMemcpyHostToDevice);
   cudaMemcpy(d_old_boards, board.data(),
              Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue),
              cudaMemcpyHostToDevice);
-
-  Board::FieldValue *d_solved_board = nullptr;
-  cudaMalloc(reinterpret_cast<void **>(&d_solved_board),
-             Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue));
   cudaMemset(d_solved_board, 0,
              Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue));
-
-  int *d_solved_board_mutex = nullptr;
-  cudaMalloc(reinterpret_cast<void **>(&d_solved_board_mutex), sizeof(int));
   cudaMemset(d_solved_board_mutex, 0, sizeof(int));
-
-  uint8_t *d_empty_fields = nullptr;
-  cudaMalloc(reinterpret_cast<void **>(&d_empty_fields),
-             kNBoards * Board::kBoardSize * Board::kBoardSize *
-                 sizeof(uint8_t));
   cudaMemset(d_empty_fields, 0,
-             kNBoards * Board::kBoardSize * Board::kBoardSize *
-                 sizeof(uint8_t));
-
-  uint8_t *d_empty_fields_count = nullptr;
-  cudaMalloc(reinterpret_cast<void **>(&d_empty_fields_count),
-             kNBoards * sizeof(uint8_t));
-  cudaMemset(d_empty_fields_count, 0, kNBoards * sizeof(uint8_t));
-
+             deviceResourceManager::kNBoards * Board::kBoardSize *
+                 Board::kBoardSize * sizeof(uint8_t));
+  cudaMemset(d_empty_fields_count, 0,
+             deviceResourceManager::kNBoards * sizeof(uint8_t));
   for (int i = 0; i < kIterations; ++i) {
     cudaMemset(d_new_boards_count, 0, sizeof(int));
     Generator<<<kBlocks, kThreadsPerBlock>>>(
@@ -313,7 +290,6 @@ Run(std::vector<Board::FieldValue> const &board) {
     std::swap(d_old_boards, d_new_boards);
     std::swap(d_old_boards_count, d_new_boards_count);
   }
-
   int solved = 0;
   cudaMemcpy(&solved, d_solved_board_mutex, sizeof(int),
              cudaMemcpyDeviceToHost);
@@ -328,15 +304,6 @@ Run(std::vector<Board::FieldValue> const &board) {
   cudaMemcpy(ret.get(), d_solved_board,
              Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue),
              cudaMemcpyDeviceToHost);
-
-  cudaFree(d_empty_fields_count);
-  cudaFree(d_empty_fields);
-  cudaFree(d_solved_board_mutex);
-  cudaFree(d_solved_board);
-  cudaFree(d_new_boards_count);
-  cudaFree(d_new_boards);
-  cudaFree(d_old_boards_count);
-  cudaFree(d_old_boards);
   return {ret.get(), ret.get() + Board::kBoardSize * Board::kBoardSize};
 }
 } // namespace kernel

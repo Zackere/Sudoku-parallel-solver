@@ -2,6 +2,7 @@
 #include <list>
 
 #include "include/cuda_kernel.cuh"
+#include "include/device_resource_manager.cuh"
 
 #include "include/board.hpp"
 
@@ -35,5 +36,6 @@ int main(int argc, char const **argv) {
       }
     }
   }
+  deviceResourceManager::Release();
   return 0;
 }
