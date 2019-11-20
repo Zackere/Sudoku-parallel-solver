@@ -4,64 +4,73 @@
 
 namespace sudoku {
 namespace {
-struct PossibleValues {
-  Board::FieldValue values[Board::kBoardSize] = {0};
-  int len = 0;
-  PossibleValues &operator=(PossibleValues const &other) {
-    if (this != &other) {
-      for (int i = 0; i < other.len; ++i)
-        values[i] = other.values[i];
-      len = other.len;
-    }
-    return *this;
-  }
-};
-
 std::vector<Board::FieldValue> tmp_board;
 
-PossibleValues GetPossibleValues(
-                                 int x, int y) {
-  bool free[Board::kBoardSize];
-  memset(free, 1, sizeof free);
-  for (auto i = 0u; i < Board::kBoardSize; ++i) {
-    auto val = tmp_board[y * Board::kBoardSize + i];
-    if (val > 0)
-      free[val - 1] = false;
-    val = tmp_board[i * Board::kBoardSize + x];
-    if (val > 0)
-      free[val - 1] = false;
+#define SetNthBit(number, n) ((number) |= (1ul << (n)))
+#define ClearNthBit(number, n) ((number) &= ~(1ul << (n)))
+#define GetNthBit(number, n) (((number) >> (n)) & 1u)
+
+bool NotInRow(int row) {
+  uint16_t st = 0;
+  bool ret = true;
+  for (int i = 0; i < Board::kBoardSize; i++) {
+    if (tmp_board[Board::kBoardSize * row + i] &&
+        GetNthBit(st, tmp_board[Board::kBoardSize * row + i]))
+      return false;
+    SetNthBit(st, tmp_board[Board::kBoardSize * row + i]);
   }
-  auto pom_x = x - x % Board::kQuadrantSize;
-  auto pom_y = y - y % Board::kQuadrantSize;
-  for (int i = 0; i < Board::kQuadrantSize; ++i)
-    for (int j = 0; j < Board::kQuadrantSize; ++j) {
-      auto val =
-          tmo_board[(pom_y + (y + j) % Board::kQuadrantSize) * Board::kBoardSize +
-                pom_x + (x + i) % Board::kQuadrantSize];
-      if (val > 0)
-        free[val - 1] = false;
-    }
-  PossibleValues ret;
-  for (int i = 0; i < Board::kBoardSize; ++i)
-    if (free[i])
-      ret.values[ret.len++] = i + 1;
   return ret;
 }
 
+bool NotInCol(int col) {
+  uint16_t st = 0;
+  for (int i = 0; i < Board::kBoardSize; i++) {
+    if (tmp_board[Board::kBoardSize * i + col] &&
+        GetNthBit(st, tmp_board[Board::kBoardSize * i + col]))
+      return false;
+    SetNthBit(st, tmp_board[Board::kBoardSize * i + col]);
+  }
+  return true;
+}
 
-bool SolveRec() {
-  for (int i = 0; i < Board::kBoardSize; ++i)
-    for (int j = 0; j < Board::kBoardSize; ++j) {
-    if(!tmp_board[i * Board::kBoardSize + j]){
-    auto pv = GetPossibleValues(j,i);
+bool NotInBox(int row, int col) {
+  row -= row % Board::kQuadrantSize;
+  col -= col % Board::kQuadrantSize;
+  uint16_t st = 0;
+  auto pom_y = row - row % Board::kQuadrantSize;
+  auto pom_x = col - col % Board::kQuadrantSize;
+  for (int i = 0; i < Board::kQuadrantSize; ++i)
+    for (int j = 0; j < Board::kQuadrantSize; ++j) {
+      if (tmp_board[(pom_y + i) * Board::kBoardSize + pom_x + j] &&
+          GetNthBit(st, tmp_board[(pom_y + i) * Board::kBoardSize + pom_x + j]))
+        return false;
+      SetNthBit(st, tmp_board[(pom_y + i) * Board::kBoardSize + pom_x + j]);
     }
+  return true;
+}
+
+bool SolveBacktrack(int start) {
+  for (int i = start; i < Board::kBoardSize * Board::kBoardSize; ++i) {
+    if (!tmp_board[i]) {
+      auto col = i % Board::kBoardSize;
+      auto row = i / Board::kBoardSize;
+      for (int j = 1; j <= Board::kBoardSize; ++j) {
+        tmp_board[i] = j;
+        if (NotInCol(col) && NotInRow(row) && NotInBox(row, col) &&
+            SolveBacktrack(i + 1))
+          return true;
+      }
+      tmp_board[i] = 0;
+      return false;
     }
+  }
+  return true;
 }
 } // namespace
 std::vector<Board::FieldValue>
 Solve(std::vector<Board::FieldValue> const &board) {
   tmp_board = board;
-  SolveRec();
+  SolveBacktrack(0);
   return tmp_board;
 }
 } // namespace sudoku

@@ -26,12 +26,13 @@ EXE = sequential_sudoku_solver
 # Object files:
 OBJS = $(OBJ_DIR)/main.o 
 OBJS += $(OBJ_DIR)/sequential_solver.o 
+OBJS += $(OBJ_DIR)/board.o
 
 ##########################################################
 
 ## Compile ##
 
-# Link c++ and CUDA compiled object files to target executable:
+# Link c++ compiled object files to target executable:
 $(EXE) : $(OBJS)
 	clang-format -i ./include/* ./src/*; $(CC) $(CC_FLAGS) $(OBJS) -o $@
 

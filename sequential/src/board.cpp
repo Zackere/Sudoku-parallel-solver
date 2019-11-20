@@ -95,10 +95,10 @@ std::ostream &operator<<(std::ostream &out, Board const &board) {
     if (i > 0 && i % Board::kBoardSize == 0)
       out << "|\n";
     if (i > 0 && i % (Board::kBoardSize * Board::kQuadrantSize) == 0)
-      out << "=============\n";
+      out << "==========================\n";
     if (i % Board::kQuadrantSize == 0)
-      out << '|';
-    out << static_cast<int>(data[i]);
+      out << "| ";
+    out << static_cast<int>(data[i]) << ' ';
   }
   out << "|\n";
   return out;
