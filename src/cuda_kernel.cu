@@ -16,7 +16,7 @@ namespace kernel {
 namespace {
 constexpr unsigned kBlocks = 128;
 constexpr unsigned kThreadsPerBlock = 256;
-constexpr unsigned kIterations = 10;
+constexpr unsigned kIterations = 30;
 
 #define SetNthBit(number, n) ((number) |= (1ul << (n)))
 #define ClearNthBit(number, n) ((number) &= ~(1ul << (n)))
@@ -104,6 +104,9 @@ __global__ void Generator(Board::FieldValue *old_boards, int *old_boards_count,
                                pos * Board::kBoardSize * Board::kBoardSize] = k;
               }
               empty_fields_count[pos] = empty_index + 1;
+            } else {
+              atomicMin(new_boards_count, deviceResourceManager::kNBoards);
+              return;
             }
           }
         }
