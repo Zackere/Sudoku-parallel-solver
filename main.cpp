@@ -3,10 +3,12 @@
 
 #include "include/cuda_kernel.cuh"
 #include "include/device_resource_manager.cuh"
+#include "include/time_manager.hpp"
 
 #include "include/board.hpp"
 
 int main(int argc, char const **argv) {
+  timeManager::ResetTime();
   std::list<sudoku::Board> boards;
   for (auto i = 1u; i < argc; ++i) {
     boards.emplace_back();
@@ -37,5 +39,7 @@ int main(int argc, char const **argv) {
     }
   }
   deviceResourceManager::Release();
+  std::cout << "Total time spent on computing: "
+            << timeManager::GetElapsedTime() << " ms\n";
   return 0;
 }

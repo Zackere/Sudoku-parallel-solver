@@ -1,6 +1,7 @@
 #include "../include/cuda_kernel.cuh"
 
 #include "../include/device_resource_manager.cuh"
+#include "../include/time_manager.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -14,8 +15,8 @@
 namespace sudoku {
 namespace kernel {
 namespace {
-constexpr unsigned kBlocks = 1024;
-constexpr unsigned kThreadsPerBlock = 512;
+constexpr unsigned kBlocks = 512;
+constexpr unsigned kThreadsPerBlock = 258;
 constexpr unsigned kIterations = 13;
 
 #define SetNthBit(number, n) ((number) |= (1ul << (n)))
@@ -223,6 +224,36 @@ __global__ void Simplificator(Board::FieldValue *old_boards,
     }
   }
 }
+
+class ScopedCudaEvent {
+public:
+  ScopedCudaEvent() { cudaEventCreate(&event_); }
+  ~ScopedCudaEvent() { cudaEventDestroy(event_); }
+  cudaEvent_t Get() { return event_; }
+  void Record() { cudaEventRecord(event_); }
+  void Sync() { cudaEventSynchronize(event_); }
+
+private:
+  cudaEvent_t event_;
+
+  ScopedCudaEvent(ScopedCudaEvent const &) = delete;
+  ScopedCudaEvent &operator=(ScopedCudaEvent const &) = delete;
+};
+
+class ScopedCudaStream {
+public:
+  ScopedCudaStream() { cudaStreamCreate(&stream_); }
+  ~ScopedCudaStream() { cudaStreamDestroy(stream_); }
+  cudaStream_t Get() { return stream_; }
+  cudaError_t Query() { return cudaStreamQuery(stream_); }
+  void Sync() { cudaStreamSynchronize(stream_); }
+
+private:
+  cudaStream_t stream_;
+
+  ScopedCudaStream(ScopedCudaStream const &) = delete;
+  ScopedCudaStream &operator=(ScopedCudaStream const &) = delete;
+};
 } // namespace
 
 std::vector<Board::FieldValue>
@@ -235,12 +266,28 @@ Run(std::vector<Board::FieldValue> const &board) {
   int *d_solved_board_mutex = deviceResourceManager::GetSolvedBoardMutex();
   uint8_t *d_empty_fields = deviceResourceManager::GetEmptyFields();
   uint8_t *d_empty_fields_count = deviceResourceManager::GetEmptyFieldsCount();
-  cudaMemset(d_old_boards, 0,
-             deviceResourceManager::kNBoards * Board::kBoardSize *
-                 Board::kBoardSize * sizeof(Board::FieldValue));
-  cudaMemset(d_new_boards, 0,
-             deviceResourceManager::kNBoards * Board::kBoardSize *
-                 Board::kBoardSize * sizeof(Board::FieldValue));
+  ScopedCudaStream kernel_stream;
+  ScopedCudaStream old_boards_set_stream, new_boards_set_stream,
+      empty_fields_set_stream, empty_fields_count_set_stream;
+
+  ScopedCudaEvent start, stop;
+  start.Record();
+
+  cudaMemsetAsync(d_old_boards, 0,
+                  deviceResourceManager::kNBoards * Board::kBoardSize *
+                      Board::kBoardSize * sizeof(Board::FieldValue),
+                  old_boards_set_stream.Get());
+  cudaMemsetAsync(d_new_boards, 0,
+                  deviceResourceManager::kNBoards * Board::kBoardSize *
+                      Board::kBoardSize * sizeof(Board::FieldValue),
+                  new_boards_set_stream.Get());
+  cudaMemsetAsync(d_empty_fields, 0,
+                  deviceResourceManager::kNBoards * Board::kBoardSize *
+                      Board::kBoardSize * sizeof(uint8_t),
+                  empty_fields_set_stream.Get());
+  cudaMemsetAsync(d_empty_fields_count, 0,
+                  deviceResourceManager::kNBoards * sizeof(uint8_t),
+                  empty_fields_count_set_stream.Get());
   std::unique_ptr<int> one(new int(1));
   cudaMemcpy(d_old_boards_count, one.get(), sizeof(int),
              cudaMemcpyHostToDevice);
@@ -250,39 +297,41 @@ Run(std::vector<Board::FieldValue> const &board) {
   cudaMemset(d_solved_board, 0,
              Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue));
   cudaMemset(d_solved_board_mutex, 0, sizeof(int));
-  cudaMemset(d_empty_fields, 0,
-             deviceResourceManager::kNBoards * Board::kBoardSize *
-                 Board::kBoardSize * sizeof(uint8_t));
-  cudaMemset(d_empty_fields_count, 0,
-             deviceResourceManager::kNBoards * sizeof(uint8_t));
+
+  old_boards_set_stream.Sync();
+  new_boards_set_stream.Sync();
+  empty_fields_set_stream.Sync();
+  empty_fields_count_set_stream.Sync();
 
   for (int i = 0; i < kIterations; ++i) {
     cudaMemset(d_new_boards_count, 0, sizeof(int));
-    Simplificator<<<kBlocks, dim3(Board::kBoardSize, Board::kBoardSize)>>>(
-        d_old_boards, d_old_boards_count, d_new_boards, d_new_boards_count);
-    cudaDeviceSynchronize();
+    Simplificator<<<kBlocks, dim3(Board::kBoardSize, Board::kBoardSize), 0,
+                    kernel_stream.Get()>>>(d_old_boards, d_old_boards_count,
+                                           d_new_boards, d_new_boards_count);
+    kernel_stream.Sync();
     std::swap(d_old_boards, d_new_boards);
     std::swap(d_old_boards_count, d_new_boards_count);
     cudaMemset(d_new_boards_count, 0, sizeof(int));
-    Generator<<<kBlocks, kThreadsPerBlock>>>(
+    Generator<<<kBlocks, kThreadsPerBlock, 0, kernel_stream.Get()>>>(
         d_old_boards, d_old_boards_count, d_new_boards, d_new_boards_count,
         d_empty_fields, d_empty_fields_count, d_solved_board,
         d_solved_board_mutex);
-    cudaDeviceSynchronize();
+    kernel_stream.Sync();
     std::swap(d_old_boards, d_new_boards);
     std::swap(d_old_boards_count, d_new_boards_count);
     cudaMemset(d_new_boards_count, 0, sizeof(int));
-    Simplificator<<<kBlocks, dim3(Board::kBoardSize, Board::kBoardSize)>>>(
-        d_old_boards, d_old_boards_count, d_new_boards, d_new_boards_count);
-    cudaDeviceSynchronize();
+    Simplificator<<<kBlocks, dim3(Board::kBoardSize, Board::kBoardSize), 0,
+                    kernel_stream.Get()>>>(d_old_boards, d_old_boards_count,
+                                           d_new_boards, d_new_boards_count);
+    kernel_stream.Sync();
     std::swap(d_old_boards, d_new_boards);
     std::swap(d_old_boards_count, d_new_boards_count);
     cudaMemset(d_new_boards_count, 0, sizeof(int));
-    Generator<<<kBlocks, kThreadsPerBlock>>>(
+    Generator<<<kBlocks, kThreadsPerBlock, 0, kernel_stream.Get()>>>(
         d_old_boards, d_old_boards_count, d_new_boards, d_new_boards_count,
         d_empty_fields, d_empty_fields_count, d_solved_board,
         d_solved_board_mutex);
-    cudaDeviceSynchronize();
+    kernel_stream.Sync();
     std::swap(d_old_boards, d_new_boards);
     std::swap(d_old_boards_count, d_new_boards_count);
   }
@@ -291,16 +340,23 @@ Run(std::vector<Board::FieldValue> const &board) {
   cudaMemcpy(&solved, d_solved_board_mutex, sizeof(int),
              cudaMemcpyDeviceToHost);
   if (!solved) {
-    Backtracker<<<kBlocks, kThreadsPerBlock>>>(
+    Backtracker<<<kBlocks, kThreadsPerBlock, 0, kernel_stream.Get()>>>(
         d_old_boards, d_old_boards_count, d_empty_fields, d_empty_fields_count,
         d_solved_board, d_solved_board_mutex);
-    cudaDeviceSynchronize();
+    kernel_stream.Sync();
   }
   std::unique_ptr<Board::FieldValue[]> ret(
       new Board::FieldValue[Board::kBoardSize * Board::kBoardSize]);
   cudaMemcpy(ret.get(), d_solved_board,
              Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue),
              cudaMemcpyDeviceToHost);
+
+  stop.Record();
+  stop.Sync();
+  float ms = 0;
+  cudaEventElapsedTime(&ms, start.Get(), stop.Get());
+  timeManager::AddTimeElapsed(ms);
+
   return {ret.get(), ret.get() + Board::kBoardSize * Board::kBoardSize};
 }
 } // namespace kernel

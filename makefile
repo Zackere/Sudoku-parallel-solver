@@ -55,6 +55,7 @@ OBJS = $(OBJ_DIR)/main.o
 OBJS += $(OBJ_DIR)/cuda_kernel.o 
 OBJS += $(OBJ_DIR)/board.o
 OBJS += $(OBJ_DIR)/device_resource_manager.o
+OBJS += $(OBJ_DIR)/time_manager.o
 
 FORMAT = clang-format -i ./src/* ./include/* main.cpp
 
