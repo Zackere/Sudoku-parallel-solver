@@ -16,8 +16,8 @@ namespace sudoku {
 namespace kernel {
 namespace {
 constexpr unsigned kBlocks = 512;
-constexpr unsigned kThreadsPerBlock = 258;
-constexpr unsigned kIterations = 13;
+constexpr unsigned kThreadsPerBlock = 128;
+constexpr unsigned kIterations = 24;
 
 #define SetNthBit(number, n) ((number) |= (1ul << (n)))
 #define ClearNthBit(number, n) ((number) &= ~(1ul << (n)))
@@ -78,24 +78,38 @@ __global__ void Generator(Board::FieldValue *old_boards, int *old_boards_count,
                           unsigned char *empty_fields_count,
                           Board::FieldValue *solved_board,
                           int *solved_board_mutex) {
-  for (int index = blockIdx.x * blockDim.x + threadIdx.x;
-       index < *old_boards_count; index += blockDim.x * gridDim.x) {
+  __shared__ Board::FieldValue s_current_boards[kThreadsPerBlock *
+                                                Board::kBoardSize *
+                                                Board::kBoardSize];
+  auto *my_board =
+      s_current_boards + threadIdx.x * Board::kBoardSize * Board::kBoardSize;
+  for (int index = blockIdx.x * blockDim.x; index < *old_boards_count;
+       index += blockDim.x * gridDim.x) {
+    __syncthreads();
     if (*solved_board_mutex)
       return;
     for (int i = 0; i < Board::kBoardSize * Board::kBoardSize; ++i) {
-      auto index_mul = index * Board::kBoardSize * Board::kBoardSize;
-      if (!old_boards[i + index_mul]) {
+      auto j = i * kThreadsPerBlock +
+               index * Board::kBoardSize * Board::kBoardSize + threadIdx.x;
+      s_current_boards[i * kThreadsPerBlock + threadIdx.x] =
+          j < *old_boards_count * Board::kBoardSize * Board::kBoardSize
+              ? old_boards[j]
+              : 1;
+    }
+    __syncthreads();
+    for (int i = 0; i < Board::kBoardSize * Board::kBoardSize; ++i) {
+      if (!my_board[i]) {
         auto row = i / Board::kBoardSize;
         auto col = i % Board::kBoardSize;
         for (int j = 1; j <= Board::kBoardSize; ++j) {
-          old_boards[i + index_mul] = j;
-          if (IsValid(old_boards + index_mul, row, col)) {
+          my_board[i] = j;
+          if (IsValid(my_board, row, col)) {
             auto pos = atomicAdd(new_boards_count, 1);
             if (pos < deviceResourceManager::kNBoards) {
               unsigned char empty_index = static_cast<unsigned char>(-1);
               for (int k = 0; k < Board::kBoardSize * Board::kBoardSize; ++k) {
                 if (!(new_boards[pos * Board::kBoardSize * Board::kBoardSize +
-                                 k] = old_boards[index_mul + k]))
+                                 k] = my_board[k]))
                   empty_fields[++empty_index +
                                pos * Board::kBoardSize * Board::kBoardSize] = k;
               }
@@ -109,14 +123,31 @@ __global__ void Generator(Board::FieldValue *old_boards, int *old_boards_count,
         goto NOT_SOLVED;
       }
     }
-    atomicCAS(solved_board_mutex, 0, blockIdx.x * blockDim.x + threadIdx.x);
-    if (*solved_board_mutex != blockIdx.x * blockDim.x + threadIdx.x)
-      return;
-    for (int i = 0; i < Board::kBoardSize * Board::kBoardSize; ++i)
-      solved_board[i] =
-          old_boards[index * Board::kBoardSize * Board::kBoardSize + i];
+    if (threadIdx.x + index < *old_boards_count) {
+      atomicCAS(solved_board_mutex, 0, blockIdx.x * blockDim.x + threadIdx.x);
+      if (*solved_board_mutex == blockIdx.x * blockDim.x + threadIdx.x)
+        for (int i = 0; i < Board::kBoardSize * Board::kBoardSize; ++i)
+          solved_board[i] = my_board[i];
+    }
   NOT_SOLVED:;
   }
+}
+
+__device__ uint16_t GetPossibleValues(
+    Board::FieldValue board[Board::kBoardSize][Board::kBoardSize]) {
+  uint16_t free = 0x03ff;
+  for (int i = 0; i < Board::kBoardSize; ++i) {
+    ClearNthBit(free, board[threadIdx.y][i]);
+    ClearNthBit(free, board[i][threadIdx.x]);
+  }
+  auto pom_x = threadIdx.x - threadIdx.x % Board::kQuadrantSize;
+  auto pom_y = threadIdx.y - threadIdx.y % Board::kQuadrantSize;
+  for (int i = 0; i < Board::kQuadrantSize; ++i)
+    for (int j = 0; j < Board::kQuadrantSize; ++j)
+      ClearNthBit(free,
+                  board[pom_y + (threadIdx.y + j) % Board::kQuadrantSize]
+                       [pom_x + (threadIdx.x + i) % Board::kQuadrantSize]);
+  return free >> 1;
 }
 
 __device__ bool Solve(Board::FieldValue *board, uint8_t *empty_fields,
@@ -164,23 +195,6 @@ __global__ void Backtracker(Board::FieldValue *old_boards,
   }
 }
 
-__device__ uint16_t GetPossibleValues(
-    Board::FieldValue board[Board::kBoardSize][Board::kBoardSize]) {
-  uint16_t free = 0x03ff;
-  for (int i = 0; i < Board::kBoardSize; ++i) {
-    ClearNthBit(free, board[threadIdx.y][i]);
-    ClearNthBit(free, board[i][threadIdx.x]);
-  }
-  auto pom_x = threadIdx.x - threadIdx.x % Board::kQuadrantSize;
-  auto pom_y = threadIdx.y - threadIdx.y % Board::kQuadrantSize;
-  for (int i = 0; i < Board::kQuadrantSize; ++i)
-    for (int j = 0; j < Board::kQuadrantSize; ++j)
-      ClearNthBit(free,
-                  board[pom_y + (threadIdx.y + j) % Board::kQuadrantSize]
-                       [pom_x + (threadIdx.x + i) % Board::kQuadrantSize]);
-  return free >> 1;
-}
-
 __global__ void Simplificator(Board::FieldValue *old_boards,
                               int *old_boards_count,
                               Board::FieldValue *new_boards,
@@ -189,6 +203,7 @@ __global__ void Simplificator(Board::FieldValue *old_boards,
   __shared__ int pos;
   pos = 0;
   for (int index = blockIdx.x; index < *old_boards_count; index += gridDim.x) {
+    __syncthreads();
     bool active =
         !(s_board[threadIdx.y][threadIdx.x] =
               (old_boards +
@@ -303,37 +318,31 @@ Run(std::vector<Board::FieldValue> const &board) {
   empty_fields_set_stream.Sync();
   empty_fields_count_set_stream.Sync();
 
+  cudaMemset(d_new_boards_count, 0, sizeof(int));
+  Generator<<<kBlocks, kThreadsPerBlock, 0, kernel_stream.Get()>>>(
+      d_old_boards, d_old_boards_count, d_new_boards, d_new_boards_count,
+      d_empty_fields, d_empty_fields_count, d_solved_board,
+      d_solved_board_mutex);
+  std::swap(d_old_boards, d_new_boards);
+  std::swap(d_old_boards_count, d_new_boards_count);
+  kernel_stream.Sync();
+
   for (int i = 0; i < kIterations; ++i) {
     cudaMemset(d_new_boards_count, 0, sizeof(int));
     Simplificator<<<kBlocks, dim3(Board::kBoardSize, Board::kBoardSize), 0,
                     kernel_stream.Get()>>>(d_old_boards, d_old_boards_count,
                                            d_new_boards, d_new_boards_count);
-    kernel_stream.Sync();
     std::swap(d_old_boards, d_new_boards);
     std::swap(d_old_boards_count, d_new_boards_count);
+    kernel_stream.Sync();
     cudaMemset(d_new_boards_count, 0, sizeof(int));
     Generator<<<kBlocks, kThreadsPerBlock, 0, kernel_stream.Get()>>>(
         d_old_boards, d_old_boards_count, d_new_boards, d_new_boards_count,
         d_empty_fields, d_empty_fields_count, d_solved_board,
         d_solved_board_mutex);
-    kernel_stream.Sync();
     std::swap(d_old_boards, d_new_boards);
     std::swap(d_old_boards_count, d_new_boards_count);
-    cudaMemset(d_new_boards_count, 0, sizeof(int));
-    Simplificator<<<kBlocks, dim3(Board::kBoardSize, Board::kBoardSize), 0,
-                    kernel_stream.Get()>>>(d_old_boards, d_old_boards_count,
-                                           d_new_boards, d_new_boards_count);
     kernel_stream.Sync();
-    std::swap(d_old_boards, d_new_boards);
-    std::swap(d_old_boards_count, d_new_boards_count);
-    cudaMemset(d_new_boards_count, 0, sizeof(int));
-    Generator<<<kBlocks, kThreadsPerBlock, 0, kernel_stream.Get()>>>(
-        d_old_boards, d_old_boards_count, d_new_boards, d_new_boards_count,
-        d_empty_fields, d_empty_fields_count, d_solved_board,
-        d_solved_board_mutex);
-    kernel_stream.Sync();
-    std::swap(d_old_boards, d_new_boards);
-    std::swap(d_old_boards_count, d_new_boards_count);
   }
 
   int solved = 0;
