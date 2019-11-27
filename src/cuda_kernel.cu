@@ -16,7 +16,7 @@ namespace sudoku {
 namespace kernel {
 namespace {
 constexpr unsigned kBlocks = 512;
-constexpr unsigned kThreadsPerBlock = 64;
+constexpr unsigned kThreadsPerBlock = 128;
 constexpr unsigned kIterations = 24;
 
 #define SetNthBit(number, n) ((number) |= (1ul << (n)))
