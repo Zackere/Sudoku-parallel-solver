@@ -16,26 +16,13 @@ int main(int argc, char const **argv) {
   }
   for (auto &board : boards) {
     if (board.Correct()) {
-      std::cout << board << std::endl;
-      auto data = sudoku::kernel::Run(board.Get());
-      bool b = sudoku::Board::Validate(data);
-      if (true) {
-        for (auto i = 0u;
-             i < sudoku::Board::kBoardSize * sudoku::Board::kBoardSize; ++i) {
-          if (i > 0 && i % sudoku::Board::kBoardSize == 0)
-            std::cout << "|\n";
-          if (i > 0 &&
-              i % (sudoku::Board::kBoardSize * sudoku::Board::kQuadrantSize) ==
-                  0)
-            std::cout << "==========================\n";
-          if (i % sudoku::Board::kQuadrantSize == 0)
-            std::cout << "| ";
-          std::cout << static_cast<int>(data[i]) << ' ';
-        }
-        std::cout << "|\n";
-        if (!b)
-          std::cout << "Sth went wrong@@@@@@@@@@@@@@@@@@@@@@@@\n";
-      }
+      std::cout << board;
+      auto solved = sudoku::kernel::Run(board.Get());
+      bool b = sudoku::Board::Validate(solved);
+      if (b)
+        sudoku::Board::Print(std::cout, solved);
+      else
+        std::cout << "Sth went wrong@@@@@@@@@@@@@@@@@@@@@@@@\n";
     }
   }
   deviceResourceManager::Release();

@@ -2,7 +2,7 @@
 #include "./board.hpp"
 
 namespace deviceResourceManager {
-constexpr unsigned kNBoards = 1 << 21;
+constexpr unsigned kNBoards = 1 << 22;
 sudoku::Board::FieldValue *GetOldBoards();
 int *GetOldBoardsCount();
 sudoku::Board::FieldValue *GetNewBoards();

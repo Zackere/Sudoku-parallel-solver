@@ -44,8 +44,10 @@ std::vector<Board::FieldValue> const &Board::Get() const { return data_; }
 bool Board::Correct() const { return correct_; }
 
 bool Board::Validate(std::vector<FieldValue> const &data) {
-  if (data.size() != kBoardSize * kBoardSize)
+  if (data.size() != kBoardSize * kBoardSize) {
+    std::cerr << "Wrong size\n";
     return false;
+  }
   std::set<FieldValue> used_values;
   for (auto row = 0u; row < kBoardSize; ++row) {
     used_values.clear();
@@ -89,18 +91,23 @@ bool Board::Validate(std::vector<FieldValue> const &data) {
   return true;
 }
 
-std::ostream &operator<<(std::ostream &out, Board const &board) {
-  auto data = board.Get();
-  for (auto i = 0u; i < Board::kBoardSize * Board::kBoardSize; ++i) {
-    if (i > 0 && i % Board::kBoardSize == 0)
+void Board::Print(std::ostream &out, std::vector<FieldValue> const &board) {
+  for (auto i = 0u; i < sudoku::Board::kBoardSize * sudoku::Board::kBoardSize;
+       ++i) {
+    if (i > 0 && i % sudoku::Board::kBoardSize == 0)
       out << "|\n";
-    if (i > 0 && i % (Board::kBoardSize * Board::kQuadrantSize) == 0)
+    if (i > 0 &&
+        i % (sudoku::Board::kBoardSize * sudoku::Board::kQuadrantSize) == 0)
       out << "==========================\n";
-    if (i % Board::kQuadrantSize == 0)
+    if (i % sudoku::Board::kQuadrantSize == 0)
       out << "| ";
-    out << static_cast<int>(data[i]) << ' ';
+    out << static_cast<const int>(board[i]) << ' ';
   }
-  out << "|\n";
+  out << "|\n\n";
+}
+
+std::ostream &operator<<(std::ostream &out, Board const &board) {
+  Board::Print(out, board.Get());
   return out;
 }
 } // namespace sudoku

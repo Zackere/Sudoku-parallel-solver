@@ -83,8 +83,8 @@ __global__ void Generator(Board::FieldValue *old_boards, int *old_boards_count,
                                                 Board::kBoardSize];
   auto *my_board =
       s_current_boards + threadIdx.x * Board::kBoardSize * Board::kBoardSize;
-  for (int index = blockIdx.x * blockDim.x; index < *old_boards_count;
-       index += blockDim.x * gridDim.x) {
+  for (int index = blockIdx.x * kThreadsPerBlock; index < *old_boards_count;
+       index += kThreadsPerBlock * kBlocks) {
     __syncthreads();
     if (*solved_board_mutex)
       return;
@@ -125,7 +125,7 @@ __global__ void Generator(Board::FieldValue *old_boards, int *old_boards_count,
     }
     if (threadIdx.x + index < *old_boards_count) {
       atomicCAS(solved_board_mutex, 0, blockIdx.x * blockDim.x + threadIdx.x);
-      if (*solved_board_mutex == blockIdx.x * blockDim.x + threadIdx.x)
+      if (*solved_board_mutex == blockIdx.x * kThreadsPerBlock + threadIdx.x)
         for (int i = 0; i < Board::kBoardSize * Board::kBoardSize; ++i)
           solved_board[i] = my_board[i];
     }
@@ -179,15 +179,16 @@ __global__ void Backtracker(Board::FieldValue *old_boards,
                             uint8_t *empty_fields_count,
                             Board::FieldValue *solved_board,
                             int *solved_board_mutex) {
-  for (int index = blockIdx.x * blockDim.x + threadIdx.x;
-       index < *old_boards_count; index += blockDim.x * gridDim.x) {
+  for (int index = blockIdx.x * kThreadsPerBlock + threadIdx.x;
+       index < *old_boards_count; index += kThreadsPerBlock * kBlocks) {
     if (*solved_board_mutex)
       return;
     auto index_mul = index * Board::kBoardSize * Board::kBoardSize;
     if (Solve(old_boards + index_mul, empty_fields + index_mul,
               empty_fields_count[index])) {
-      atomicCAS(solved_board_mutex, 0, blockIdx.x * blockDim.x + threadIdx.x);
-      if (*solved_board_mutex != blockIdx.x * blockDim.x + threadIdx.x)
+      atomicCAS(solved_board_mutex, 0,
+                blockIdx.x * kThreadsPerBlock + threadIdx.x);
+      if (*solved_board_mutex != blockIdx.x * kThreadsPerBlock + threadIdx.x)
         return;
       for (int i = 0; i < Board::kBoardSize * Board::kBoardSize; ++i)
         solved_board[i] = old_boards[index_mul + i];
@@ -202,7 +203,7 @@ __global__ void Simplificator(Board::FieldValue *old_boards,
   __shared__ Board::FieldValue s_board[Board::kBoardSize][Board::kBoardSize];
   __shared__ int pos;
   pos = 0;
-  for (int index = blockIdx.x; index < *old_boards_count; index += gridDim.x) {
+  for (int index = blockIdx.x; index < *old_boards_count; index += kBlocks) {
     __syncthreads();
     bool active =
         !(s_board[threadIdx.y][threadIdx.x] =

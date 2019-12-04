@@ -6,7 +6,7 @@
 namespace deviceResourceManager {
 namespace {
 sudoku::Board::FieldValue *d_old_boards = nullptr;
-int *d_old_boards_count;
+int *d_old_boards_count = nullptr;
 sudoku::Board::FieldValue *d_new_boards = nullptr;
 int *d_new_boards_count = nullptr;
 sudoku::Board::FieldValue *d_solved_board = nullptr;

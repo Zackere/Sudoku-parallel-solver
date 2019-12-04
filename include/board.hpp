@@ -16,6 +16,7 @@ public:
   void Read(char const *path);
   std::vector<FieldValue> const &Get() const;
   bool Correct() const;
+  static void Print(std::ostream &out, std::vector<FieldValue> const &board);
 
 private:
   std::vector<FieldValue> data_;

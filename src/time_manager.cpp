@@ -2,9 +2,9 @@
 
 namespace timeManager {
 namespace {
-float cur_time = 0;
+float total_ms_elapsed = 0;
 } // namespace
-void ResetTime() { cur_time = 0; }
-void AddTimeElapsed(float ms) { cur_time += ms; }
-float GetElapsedTime() { return cur_time; }
+void ResetTime() { total_ms_elapsed = 0; }
+void AddTimeElapsed(float ms) { total_ms_elapsed += ms; }
+float GetElapsedTime() { return total_ms_elapsed; }
 } // namespace timeManager

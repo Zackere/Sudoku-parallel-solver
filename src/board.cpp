@@ -54,12 +54,9 @@ bool Board::Validate(std::vector<FieldValue> const &data) {
     for (auto i = 0u; i < kBoardSize; ++i) {
       auto val = At(data, row, i);
       if (val > 0 && val <= kBoardSize) {
-        if (!used_values.insert(val).second) {
-          std::cerr << (int)val << "Occured twice\n";
+        if (!used_values.insert(val).second)
           return false;
-        }
       } else if (val > kBoardSize) {
-        std::cerr << val << "Is too big\n";
         return false;
       }
     }
@@ -94,18 +91,23 @@ bool Board::Validate(std::vector<FieldValue> const &data) {
   return true;
 }
 
-std::ostream &operator<<(std::ostream &out, Board const &board) {
-  auto data = board.Get();
-  for (auto i = 0u; i < Board::kBoardSize * Board::kBoardSize; ++i) {
-    if (i > 0 && i % Board::kBoardSize == 0)
+void Board::Print(std::ostream &out, std::vector<FieldValue> const &board) {
+  for (auto i = 0u; i < sudoku::Board::kBoardSize * sudoku::Board::kBoardSize;
+       ++i) {
+    if (i > 0 && i % sudoku::Board::kBoardSize == 0)
       out << "|\n";
-    if (i > 0 && i % (Board::kBoardSize * Board::kQuadrantSize) == 0)
+    if (i > 0 &&
+        i % (sudoku::Board::kBoardSize * sudoku::Board::kQuadrantSize) == 0)
       out << "==========================\n";
-    if (i % Board::kQuadrantSize == 0)
+    if (i % sudoku::Board::kQuadrantSize == 0)
       out << "| ";
-    out << static_cast<int>(data[i]) << ' ';
+    out << static_cast<const int>(board[i]) << ' ';
   }
-  out << "|\n";
+  out << "|\n\n";
+}
+
+std::ostream &operator<<(std::ostream &out, Board const &board) {
+  Board::Print(out, board.Get());
   return out;
 }
 } // namespace sudoku
