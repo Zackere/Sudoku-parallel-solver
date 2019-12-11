@@ -48,7 +48,7 @@ INC_DIR = include
 ## Make variables ##
 
 # Target executable name:
-EXE = parellel_sudoku_solver
+EXE = parallel_sudoku_solver
 
 # Object files:
 OBJS = $(OBJ_DIR)/main.o 
