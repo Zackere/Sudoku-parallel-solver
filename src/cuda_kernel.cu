@@ -23,6 +23,18 @@ constexpr unsigned kIterations = 24;
 #define ClearNthBit(number, n) ((number) &= ~(1ul << (n)))
 #define GetNthBit(number, n) (((number) >> (n)) & 1u)
 
+#define gpuErrchk(ans)                                                         \
+  { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line,
+                      bool abort = true) {
+  if (code != cudaSuccess) {
+    fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file,
+            line);
+    if (abort)
+      exit(code);
+  }
+}
+
 __device__ bool NotInRow(Board::FieldValue *board, int row) {
   uint16_t st = 0;
   bool ret = true;
@@ -243,11 +255,11 @@ __global__ void Simplificator(Board::FieldValue *old_boards,
 
 class ScopedCudaEvent {
 public:
-  ScopedCudaEvent() { cudaEventCreate(&event_); }
+  ScopedCudaEvent() { gpuErrchk(cudaEventCreate(&event_)); }
   ~ScopedCudaEvent() { cudaEventDestroy(event_); }
   cudaEvent_t Get() { return event_; }
-  void Record() { cudaEventRecord(event_); }
-  void Sync() { cudaEventSynchronize(event_); }
+  void Record() { gpuErrchk(cudaEventRecord(event_)); }
+  void Sync() { gpuErrchk(cudaEventSynchronize(event_)); }
 
 private:
   cudaEvent_t event_;
@@ -258,11 +270,10 @@ private:
 
 class ScopedCudaStream {
 public:
-  ScopedCudaStream() { cudaStreamCreate(&stream_); }
+  ScopedCudaStream() { gpuErrchk(cudaStreamCreate(&stream_)); }
   ~ScopedCudaStream() { cudaStreamDestroy(stream_); }
   cudaStream_t Get() { return stream_; }
-  cudaError_t Query() { return cudaStreamQuery(stream_); }
-  void Sync() { cudaStreamSynchronize(stream_); }
+  void Sync() { gpuErrchk(cudaStreamSynchronize(stream_)); }
 
 private:
   cudaStream_t stream_;
@@ -289,37 +300,42 @@ Run(std::vector<Board::FieldValue> const &board) {
   ScopedCudaEvent start, stop;
   start.Record();
 
-  cudaMemsetAsync(d_old_boards, 0,
-                  deviceResourceManager::kNBoards * Board::kBoardSize *
-                      Board::kBoardSize * sizeof(Board::FieldValue),
-                  old_boards_set_stream.Get());
-  cudaMemsetAsync(d_new_boards, 0,
-                  deviceResourceManager::kNBoards * Board::kBoardSize *
-                      Board::kBoardSize * sizeof(Board::FieldValue),
-                  new_boards_set_stream.Get());
-  cudaMemsetAsync(d_empty_fields, 0,
-                  deviceResourceManager::kNBoards * Board::kBoardSize *
-                      Board::kBoardSize * sizeof(uint8_t),
-                  empty_fields_set_stream.Get());
-  cudaMemsetAsync(d_empty_fields_count, 0,
-                  deviceResourceManager::kNBoards * sizeof(uint8_t),
-                  empty_fields_count_set_stream.Get());
+  gpuErrchk(cudaMemsetAsync(d_old_boards, 0,
+                            deviceResourceManager::kNBoards *
+                                Board::kBoardSize * Board::kBoardSize *
+                                sizeof(Board::FieldValue),
+                            old_boards_set_stream.Get()));
+  gpuErrchk(cudaMemsetAsync(d_new_boards, 0,
+                            deviceResourceManager::kNBoards *
+                                Board::kBoardSize * Board::kBoardSize *
+                                sizeof(Board::FieldValue),
+                            new_boards_set_stream.Get()));
+  gpuErrchk(cudaMemsetAsync(d_empty_fields, 0,
+                            deviceResourceManager::kNBoards *
+                                Board::kBoardSize * Board::kBoardSize *
+                                sizeof(uint8_t),
+                            empty_fields_set_stream.Get()));
+  gpuErrchk(cudaMemsetAsync(d_empty_fields_count, 0,
+                            deviceResourceManager::kNBoards * sizeof(uint8_t),
+                            empty_fields_count_set_stream.Get()));
   std::unique_ptr<int> one(new int(1));
-  cudaMemcpy(d_old_boards_count, one.get(), sizeof(int),
-             cudaMemcpyHostToDevice);
-  cudaMemcpy(d_old_boards, board.data(),
-             Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue),
-             cudaMemcpyHostToDevice);
-  cudaMemset(d_solved_board, 0,
-             Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue));
-  cudaMemset(d_solved_board_mutex, 0, sizeof(int));
+  gpuErrchk(cudaMemcpy(d_old_boards_count, one.get(), sizeof(int),
+                       cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMemcpy(d_old_boards, board.data(),
+                       Board::kBoardSize * Board::kBoardSize *
+                           sizeof(Board::FieldValue),
+                       cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMemset(d_solved_board, 0,
+                       Board::kBoardSize * Board::kBoardSize *
+                           sizeof(Board::FieldValue)));
+  gpuErrchk(cudaMemset(d_solved_board_mutex, 0, sizeof(int)));
 
   old_boards_set_stream.Sync();
   new_boards_set_stream.Sync();
   empty_fields_set_stream.Sync();
   empty_fields_count_set_stream.Sync();
 
-  cudaMemset(d_new_boards_count, 0, sizeof(int));
+  gpuErrchk(cudaMemset(d_new_boards_count, 0, sizeof(int)));
   Generator<<<kBlocks, kThreadsPerBlock, 0, kernel_stream.Get()>>>(
       d_old_boards, d_old_boards_count, d_new_boards, d_new_boards_count,
       d_empty_fields, d_empty_fields_count, d_solved_board,
@@ -329,14 +345,14 @@ Run(std::vector<Board::FieldValue> const &board) {
   kernel_stream.Sync();
 
   for (int i = 0; i < kIterations; ++i) {
-    cudaMemset(d_new_boards_count, 0, sizeof(int));
+    gpuErrchk(cudaMemset(d_new_boards_count, 0, sizeof(int)));
     Simplificator<<<kBlocks, dim3(Board::kBoardSize, Board::kBoardSize), 0,
                     kernel_stream.Get()>>>(d_old_boards, d_old_boards_count,
                                            d_new_boards, d_new_boards_count);
     std::swap(d_old_boards, d_new_boards);
     std::swap(d_old_boards_count, d_new_boards_count);
     kernel_stream.Sync();
-    cudaMemset(d_new_boards_count, 0, sizeof(int));
+    gpuErrchk(cudaMemset(d_new_boards_count, 0, sizeof(int)));
     Generator<<<kBlocks, kThreadsPerBlock, 0, kernel_stream.Get()>>>(
         d_old_boards, d_old_boards_count, d_new_boards, d_new_boards_count,
         d_empty_fields, d_empty_fields_count, d_solved_board,
@@ -347,8 +363,8 @@ Run(std::vector<Board::FieldValue> const &board) {
   }
 
   int solved = 0;
-  cudaMemcpy(&solved, d_solved_board_mutex, sizeof(int),
-             cudaMemcpyDeviceToHost);
+  gpuErrchk(cudaMemcpy(&solved, d_solved_board_mutex, sizeof(int),
+                       cudaMemcpyDeviceToHost));
   if (!solved) {
     Backtracker<<<kBlocks, kThreadsPerBlock, 0, kernel_stream.Get()>>>(
         d_old_boards, d_old_boards_count, d_empty_fields, d_empty_fields_count,
@@ -357,14 +373,15 @@ Run(std::vector<Board::FieldValue> const &board) {
   }
   std::unique_ptr<Board::FieldValue[]> ret(
       new Board::FieldValue[Board::kBoardSize * Board::kBoardSize]);
-  cudaMemcpy(ret.get(), d_solved_board,
-             Board::kBoardSize * Board::kBoardSize * sizeof(Board::FieldValue),
-             cudaMemcpyDeviceToHost);
+  gpuErrchk(cudaMemcpy(ret.get(), d_solved_board,
+                       Board::kBoardSize * Board::kBoardSize *
+                           sizeof(Board::FieldValue),
+                       cudaMemcpyDeviceToHost));
 
   stop.Record();
   stop.Sync();
   float ms = 0;
-  cudaEventElapsedTime(&ms, start.Get(), stop.Get());
+  gpuErrchk(cudaEventElapsedTime(&ms, start.Get(), stop.Get()));
   timeManager::AddTimeElapsed(ms);
 
   return {ret.get(), ret.get() + Board::kBoardSize * Board::kBoardSize};
